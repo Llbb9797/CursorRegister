@@ -45,8 +45,9 @@ class TempMail:
             if set(args).issubset(set(whitelisted_args)):
                 try:
                     mail_class()
+                    print(f"[TempMail] Use temp mail server from {mail_class}")
                     return mail_class
                 except:
-                    print("[TempMail] Fail to init temp email class for {mail_class}")
+                    print(f"[TempMail] Fail to init temp email class for {mail_class}")
 
         return None

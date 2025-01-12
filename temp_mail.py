@@ -7,7 +7,7 @@ class TempMail:
 
     disallowed_list = {
         "Internxt_com": "Hard Ratelimit",
-        #"Minutemailbox_com": "Server broken",
+        "Minutemailbox_com": "Server broken",
         "Temils_com": "Offline",
         "Tempmail_gg": "Offline",
         "Yopmail_com": "Captcha",

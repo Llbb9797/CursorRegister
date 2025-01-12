@@ -8,7 +8,8 @@ import concurrent.futures
 from datetime import datetime
 from faker import Faker
 from DrissionPage import ChromiumOptions, Chromium
-from temp_mails import Tempmail_io
+
+from temp_mail import TempMail
 
 CURSOR_URL = "https://www.cursor.com/"
 CURSOR_LOGIN_URL = "https://authenticator.cursor.sh"
@@ -35,20 +36,26 @@ def cursor_turnstile(tab, retry_times = 5):
 
 def sign_up(options):
 
+    # Thread id for debug info
+    thread_id = threading.current_thread().ident
+    retry_times = 5
+
     # Maybe fail to open the browser
     try:
         browser = Chromium(options)
     except Exception as e:
         print(e)
         return None
-
-    retry_times = 5
-
-    # Thread id for debug info
-    thread_id = threading.current_thread().ident
     
+    allow_list = ["Tempmail_io"]
+    temp_mail_cls = TempMail.get_random_mail_class()
+    #temp_mail_cls = TempMail.get_random_mail_class(allow_list)
+    if temp_mail_cls is None:
+        print(f"[Register][{thread_id}] Fail to get temp mail server")
+        return None
+
     # Get temp email address
-    mail = Tempmail_io()
+    mail = temp_mail_cls()
     email = mail.email
 
     # Get password and name by faker
@@ -74,7 +81,9 @@ def sign_up(options):
                 return None
 
             # If not in password page, try pass turnstile page
-            if not tab.wait.eles_loaded("xpath=//input[@name='password']", timeout=3) and tab.ele("xpath=//input[@name='email']").attr("data-valid") is not None:
+            if not tab.wait.eles_loaded("xpath=//input[@name='password']", timeout=5) \
+                and tab.wait.eles_loaded("xpath=//input[@name='email']") \
+                and tab.ele("xpath=//input[@name='email']", timeout=3).attr("data-valid") is not None:
                 if enable_register_log: print(f"[Register][{thread_id}][{retry}] Try pass Turnstile for email page")
                 cursor_turnstile(tab)
 
@@ -106,7 +115,9 @@ def sign_up(options):
                 return None
 
             # If not in verification code page, try pass turnstile page
-            if not tab.wait.eles_loaded("xpath=//input[@data-index=0]", timeout=3) and tab.ele("xpath=//input[@name='password']").attr("data-valid") is not None:
+            if not tab.wait.eles_loaded("xpath=//input[@data-index=0]", timeout=5) \
+                and tab.wait.eles_loaded("xpath=//input[@name='password']") \
+                and tab.ele("xpath=//input[@name='password']", timeout=3).attr("data-valid") is not None:
                 if enable_register_log: print(f"[Register][{thread_id}][{retry}] Try pass Turnstile for password page")
                 cursor_turnstile(tab)
 
@@ -127,9 +138,26 @@ def sign_up(options):
     # Get email verification code
     try:
         data = mail.wait_for_new_email(delay=1.0, timeout=120)
-        body_text = data["body_text"]
-        message_text = body_text.strip().replace('\n', '').replace('\r', '').replace('=', '')
-        verify_code = re.search(r'open browser window\.(\d{6})This code expires', message_text).group(1)
+
+        verify_code = None
+        if "body_text" in data:
+            message_text = data["body_text"]
+            message_text = message_text.strip().replace('\n', '').replace('\r', '').replace('=', '')
+            verify_code = re.search(r'open browser window\.(\d{6})This code expires', message_text).group(1)
+        elif "preview" in data:
+            message_text = data["preview"]
+            verify_code = re.search(r'Your verification code is (\d{6})\. This code expires', message_text).group(1)
+        # Handle HTML format
+        elif "content" in data:
+            message_text = data["content"]
+            message_text = re.sub(r"<[^>]*>", "", message_text)
+            message_text = re.sub(r"&#8202;", "", message_text)
+            message_text = re.sub(r"&nbsp;", "", message_text)
+            message_text = re.sub(r'[\n\r\s]', "", message_text)
+            verify_code = re.search(r'openbrowserwindow\.(\d{6})Thiscodeexpires', message_text).group(1)
+        
+        assert verify_code is not None, "Fail to get code from email."
+
     except Exception as e:
         print(f"[Register][{thread_id}] Fail to get code from email. Email data: {data}")
         return None

@@ -46,9 +46,10 @@ def sign_up(options):
     except Exception as e:
         print(e)
         return None
-    
-    allow_list = ["Tempmail_io"]
-    temp_mail_cls = TempMail.get_random_mail_class()
+
+    #allow_list = ["Tempmail_io"]
+    allow_list = ["Minutemailbox_com"]
+    temp_mail_cls = TempMail.get_random_mail_class(allow_list)
     #temp_mail_cls = TempMail.get_random_mail_class(allow_list)
     if temp_mail_cls is None:
         print(f"[Register][{thread_id}] Fail to get temp mail server")

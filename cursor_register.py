@@ -2,14 +2,15 @@ import os
 import re
 import csv
 import copy
+import queue
+import asyncio
 import argparse
 import threading
 import concurrent.futures
 from datetime import datetime
 from faker import Faker
 from DrissionPage import ChromiumOptions, Chromium
-
-from temp_mail import TempMail
+from temp_mails import Tempmail_io
 
 CURSOR_URL = "https://www.cursor.com/"
 CURSOR_LOGIN_URL = "https://authenticator.cursor.sh"
@@ -20,9 +21,11 @@ hide_account_info = os.getenv('HIDE_ACCOUNT_INFO', 'false').lower() == 'true'
 enable_register_log = True
 
 def cursor_turnstile(tab, retry_times = 5):
+    thread_id = threading.current_thread().ident
+
     for retry in range(retry_times): # Retry times
         try:
-            if enable_register_log: print(f"[Register][{retry}] Passing Turnstile")
+            if enable_register_log: print(f"[Register][{thread_id}][{retry}] Passing Turnstile")
             challenge_shadow_root = tab.ele('@id=cf-turnstile').child().shadow_root
             challenge_shadow_button = challenge_shadow_root.ele("tag:iframe", timeout=30).ele("tag:body").sr("xpath=//input[@type='checkbox']")
             if challenge_shadow_button:
@@ -36,9 +39,9 @@ def cursor_turnstile(tab, retry_times = 5):
 
 def sign_up(options):
 
-    # Thread id for debug info
-    thread_id = threading.current_thread().ident
-    retry_times = 5
+    def wait_for_new_email_thread(mail, queue, timeout=300):
+        data = mail.wait_for_new_email(delay=1, timeout=timeout)
+        queue.put(copy.deepcopy(data))
 
     # Maybe fail to open the browser
     try:
@@ -47,15 +50,11 @@ def sign_up(options):
         print(e)
         return None
 
-    allow_list = ["Tempmail_io"]
-    temp_mail_cls = TempMail.get_random_mail_class()
-    #temp_mail_cls = TempMail.get_random_mail_class(allow_list)
-    if temp_mail_cls is None:
-        print(f"[Register][{thread_id}] Fail to get temp mail server")
-        return None
-
+    retry_times = 5
+    thread_id = threading.current_thread().ident
+    
     # Get temp email address
-    mail = temp_mail_cls()
+    mail = Tempmail_io()
     email = mail.email
 
     # Get password and name by faker
@@ -63,8 +62,12 @@ def sign_up(options):
     password = fake.password(length=12, special_chars=True, digits=True, upper_case=True, lower_case=True)
     first_name, last_name = fake.name().split(' ')[0:2]
 
+    email_queue = queue.Queue()
+    email_thread = threading.Thread(target=wait_for_new_email_thread, args=(mail, email_queue, ))
+    email_thread.daemon = True
+    email_thread.start()
+
     tab = None
-    browser.wait(0.5, 1.5)
     # Input first name, last name, email
     for retry in range(retry_times):
         try:
@@ -80,18 +83,20 @@ def sign_up(options):
             if tab.ele("xpath=//input[@name='email']").attr("data-invalid") == "true":
                 print(f"[Register][{thread_id}] Email is invalid")
                 return None
-
+            
+            # In password page or data is validated, continue to next page
+            if tab.wait.eles_loaded("xpath=//input[@name='password']", timeout=3):
+                print(f"[Register][{thread_id}] Continue to password page")
+                break
             # If not in password page, try pass turnstile page
-            if not tab.wait.eles_loaded("xpath=//input[@name='password']", timeout=5) \
-                and tab.wait.eles_loaded("xpath=//input[@name='email']") \
-                and tab.ele("xpath=//input[@name='email']", timeout=3).attr("data-valid") is not None:
+            elif tab.ele("xpath=//input[@name='email']", timeout=3).attr("data-valid") is not None:
                 if enable_register_log: print(f"[Register][{thread_id}][{retry}] Try pass Turnstile for email page")
                 cursor_turnstile(tab)
 
         except Exception as e:
             print(f"[Register][{thread_id}] Exception when handlding email page.")
             print(e)
-
+        
         # In password page or data is validated, continue to next page
         if tab.wait.eles_loaded("xpath=//input[@name='password']"):
             print(f"[Register][{thread_id}] Continue to password page")
@@ -108,24 +113,21 @@ def sign_up(options):
             if enable_register_log: print(f"[Register][{thread_id}][{retry}] Input password")
             tab.ele("xpath=//input[@name='password']").input(password, clear=True)
             tab.ele('@type=submit').click()
-            tab.wait(1.5, 2.5)
-            tab.wait.load_start()
-            
-            if tab.ele("xpath=//input[@name='password']").attr("data-invalid") == "true":
-                print(f"[Register][{thread_id}] Pssword is invalid")
-                return None
+            tab.wait(0.5, 2.5)
 
+            # In code verification page or data is validated, continue to next page
+            if tab.wait.eles_loaded("xpath=//input[@data-index=0]", timeout=3):
+                print(f"[Register][{thread_id}] Continue to email code page")
+                break
             # If not in verification code page, try pass turnstile page
-            if not tab.wait.eles_loaded("xpath=//input[@data-index=0]", timeout=5) \
-                and tab.wait.eles_loaded("xpath=//input[@name='password']") \
-                and tab.ele("xpath=//input[@name='password']", timeout=3).attr("data-valid") is not None:
+            elif tab.ele("xpath=//input[@name='password']", timeout=3).attr("data-valid") is not None:
                 if enable_register_log: print(f"[Register][{thread_id}][{retry}] Try pass Turnstile for password page")
                 cursor_turnstile(tab)
 
         except Exception as e:
             print(f"[Register][{thread_id}] Exception when handling password page.")
             print(e)
-                
+
         # In code verification page or data is validated, continue to next page
         if tab.wait.eles_loaded("xpath=//input[@data-index=0]"):
             print(f"[Register][{thread_id}] Continue to email code page")
@@ -134,35 +136,23 @@ def sign_up(options):
         # Kill the function since time out 
         if retry == retry_times - 1:
             if enable_register_log: print(f"[Register][{thread_id}] Timeout when inputing password")
+
             return None
+    import time
+    time.sleep(5)
 
     # Get email verification code
     try:
-        data = mail.wait_for_new_email(delay=1.0, timeout=120)
-
-        verify_code = None
-        if "body_text" in data:
-            message_text = data["body_text"]
-            message_text = message_text.strip().replace('\n', '').replace('\r', '').replace('=', '')
-            verify_code = re.search(r'open browser window\.(\d{6})This code expires', message_text).group(1)
-        elif "preview" in data:
-            message_text = data["preview"]
-            verify_code = re.search(r'Your verification code is (\d{6})\. This code expires', message_text).group(1)
-        # Handle HTML format
-        elif "content" in data:
-            message_text = data["content"]
-            message_text = re.sub(r"<[^>]*>", "", message_text)
-            message_text = re.sub(r"&#8202;", "", message_text)
-            message_text = re.sub(r"&nbsp;", "", message_text)
-            message_text = re.sub(r'[\n\r\s]', "", message_text)
-            verify_code = re.search(r'openbrowserwindow\.(\d{6})Thiscodeexpires', message_text).group(1)
-        
-        assert verify_code is not None, "Fail to get code from email."
-
+        data = email_queue.get(timeout=60)
+        body_text = data["body_text"]
+        message_text = body_text.strip().replace('\n', '').replace('\r', '').replace('=', '')
+        verify_code = re.search(r'open browser window\.(\d{6})This code expires', message_text).group(1)
     except Exception as e:
         print(f"[Register][{thread_id}] Fail to get code from email. Email data: {data}")
         return None
-    
+    finally:
+        email_thread.join()
+
     # Input email verification code
     for retry in range(retry_times):
         try:
@@ -227,6 +217,7 @@ def register_cursor(number, max_workers):
                 results.append(result)
 
     results = [result for result in results if result["token"] is not None]
+
     if len(results) > 0:
         formatted_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -273,7 +264,7 @@ if __name__ == "__main__":
     tokens = list(set([row['token'] for row in account_infos]))
     print(f"[Register] Register {len(tokens)} Accounts Successfully")
     
-    if use_oneapi and len(account_infos)>0:
+    if use_oneapi and len(account_infos) > 0:
         from tokenManager.oneapi_manager import OneAPIManager
         oneapi = OneAPIManager(oneapi_url, oneapi_token)
         response = oneapi.add_channel("Cursor",

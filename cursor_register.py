@@ -199,7 +199,13 @@ def sign_up(options):
             return None
 
     # Get cookie
-    cookies = tab.cookies().as_dict()
+    try:
+        cookies = tab.cookies().as_dict()
+    except e:
+        print(f"[Register][{thread_id}] Fail to get cookie.")
+        if not enable_browser_log: browser.quit(force=True, del_data=True)
+        return None
+
     token = cookies.get('WorkosCursorSessionToken', None)
     if enable_register_log:
         if token is not None:

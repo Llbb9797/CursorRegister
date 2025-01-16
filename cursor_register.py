@@ -48,7 +48,7 @@ def sign_up(options):
             data = mail.wait_for_new_email(delay=1, timeout=timeout)
             queue.put(copy.deepcopy(data))
         except Exception as e:
-            pass
+            queue.put(None)
 
     # Maybe fail to open the browser
     try:

@@ -44,8 +44,11 @@ def cursor_turnstile(tab, retry_times = 5):
 def sign_up(options):
 
     def wait_for_new_email_thread(mail, queue, timeout=300):
-        data = mail.wait_for_new_email(delay=1, timeout=timeout)
-        queue.put(copy.deepcopy(data))
+        try:
+            data = mail.wait_for_new_email(delay=1, timeout=timeout)
+            queue.put(copy.deepcopy(data))
+        except Exception as e:
+            pass
 
     # Maybe fail to open the browser
     try:
